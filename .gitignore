@@ -12,9 +12,9 @@ __pycache__/
 *.out
 
 # Dependencies
-node_modules/
-venv/
 .venv/
+venv/
+node_modules/
 .mypy_cache/
 .pytest_cache/
 target/
@@ -29,7 +29,7 @@ target/
 # Environment
 .env
 .env.local
-*.env.*
+.env.*
 
 # Editors
 .vscode/
