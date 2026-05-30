@@ -980,18 +980,9 @@ class TxtEpubConverter:
             if has_font else ""
         )
         body_font_css = f'font-family: "{font_family}", serif; ' if has_font else ""
-        style = epub.EpubItem(
-            uid="style_main",
-            file_name="style/main.css",
-            media_type="text/css",
-            content=f"""
-{font_face_css}body {{ {body_font_css}line-height: 1.8; margin: 5%; }}
-.large-text {{ font-size: 1.25em; }}
-.center-text {{ text-align: center; }}
-.right-text {{ text-align: right; }}
-""".strip(),
-        )
-        book.add_item(style)
+        font_style = f" font-family: '{font_family}', serif;" if has_font else ""
+        
+        # CSS 파일 생성 제거 (인라인 스타일 및 태그 사용으로 대체)
         if has_font:
             with open(font_path, "rb") as f:
                 book.add_item(
@@ -1019,6 +1010,7 @@ class TxtEpubConverter:
                 marker=chapter.marker,
                 subtitle=self._join_subtitle_prefix(chapter.subtitle_prefix, chapter.subtitle),
                 closing_text=closing_text,
+                font_style=font_style,
             )
             book.add_item(item)
             epub_chapters.append(item)
@@ -1042,11 +1034,27 @@ class TxtEpubConverter:
             total_volumes=total_volumes,
             total_episodes=total_episodes,
             episode_range=display_episode_range,
+            font_style=font_style,
         )
         book.add_item(copyright_item)
-        reading_order = list(epub_chapters) + [copyright_item]
+        
+        # 목차 페이지 생성
+        toc_item = epub.EpubHtml(
+            title="목차",
+            file_name="text/toc.xhtml",
+            lang=language.strip() or "ko",
+        )
+        toc_item.content = self._toc_to_xhtml(
+            final_title=final_title,
+            chapters=epub_chapters,
+            copyright_item=copyright_item,
+            font_style=font_style,
+        )
+        book.add_item(toc_item)
+        
+        reading_order = [toc_item] + list(epub_chapters) + [copyright_item]
 
-        book.toc = tuple(epub_chapters)
+        book.toc = tuple([toc_item] + epub_chapters + [copyright_item])
         book.spine = (["cover"] if has_cover else []) + reading_order
         book.add_item(epub.EpubNcx())
         write_epub2(output_path, book, {})
@@ -1110,54 +1118,46 @@ class TxtEpubConverter:
             return f"{int(match.group(1))}화"
         return episode_range
 
-    def _chapter_to_xhtml(
-        self, title: str, text: str, marker: str = "", subtitle: str = "", closing_text: str = "",
-    ) -> str:
-        escaped_title = html.escape(title)
-        heading = self._chapter_heading_xhtml(title, marker, subtitle)
-        text = self._normalize_blank_lines(text)
-        paragraphs = []
-        for block in text.split("\n"):
-            paragraphs.append(f"<p>{html.escape(block.strip())}</p>" if block.strip() else "<p>&#160;</p>")
-        if closing_text.strip():
-            paragraphs.append("<p>&#160;</p>")
-            paragraphs.append(
-                f'<p class="right-text">'
-                f'{html.escape(closing_text.strip())}</p>'
-            )
-        body = "\n".join(paragraphs)
-        return f"""
-<html xmlns="http://www.w3.org/1999/xhtml">
-<head>
-    <title>{escaped_title}</title>
-    <link rel="stylesheet" type="text/css" href="../style/main.css" />
-</head>
-<body>
-    {heading}
-    <p>&#160;</p>
-    <div>
-    {body}
-    </div>
-</body>
-</html>
-""".strip()
-
     def _chapter_heading_xhtml(self, title: str, marker: str = "", subtitle: str = "") -> str:
         marker, subtitle = self._split_chapter_heading_parts(title, marker, subtitle)
         if marker:
             marker_html = html.escape(marker)
-            subtitle_html = (
-                f'\n        <p class="large-text center-text">'
-                f'{html.escape(subtitle)}</p>'
-                if subtitle else ""
-            )
-            return (
+            # 화수가 있고 부제가 있는 경우: 화수, 부제 (가운데), 사이 <br> 없음
+            if subtitle:
+                subtitle_html = f'\n        <h3 align="center">{html.escape(subtitle)}</h3>'
+                return (
+                    '<div>\n'
+                    f'        <h2>{marker_html}</h2>'
+                    f'{subtitle_html}\n'
+                    '        <br>\n'
+                    '    </div>'
+                )
+            else:
+                # 화수만 있는 경우
+                return (
+                    '<div>\n'
+                    f'        <h2>{marker_html}</h2>\n'
+                    '        <br>\n'
+                    '    </div>'
+                )
+        
+        # 마커가 없고 제목만 있는 경우 (기존 처리)
+        if subtitle:
+             return (
                 '<div>\n'
-                f'        <p class="large-text"><strong>{marker_html}</strong></p>'
-                f'{subtitle_html}\n'
+                f'        <h2>{html.escape(title)}</h2>'
+                f'\n        <h3 align="center">{html.escape(subtitle)}</h3>\n'
+                '        <br>\n'
                 '    </div>'
-            )
-        return f"<h1>{html.escape(title)}</h1>"
+             )
+        
+        # 제목만 있는 경우
+        return (
+            '<div>\n'
+            f'        <h2>{html.escape(title)}</h2>\n'
+            '        <br>\n'
+            '    </div>'
+        )
 
     def _split_chapter_heading_parts(self, title: str, marker: str = "", subtitle: str = "") -> tuple[str, str]:
         marker = (marker or "").strip()
@@ -1184,6 +1184,7 @@ class TxtEpubConverter:
         self, final_title: str, subtitle: str, creator: str, translator: str, publisher: str,
         date: str, ebook_publisher: str, isbn: str, series: str, rights: str,
         total_volumes: str = "", total_episodes: str = "", episode_range: str = "",
+        font_style: str = "",
     ) -> str:
         lines = [
             ("제목", final_title),
@@ -1208,9 +1209,9 @@ class TxtEpubConverter:
                 body_lines.append(f"{label}: {value}")
         if not body_lines:
             body_lines.append("판권 정보 없음")
-        return self._copyright_page_xhtml(final_title, body_lines)
+        return self._copyright_page_xhtml(final_title, body_lines, font_style)
 
-    def _copyright_page_xhtml(self, final_title: str, body_lines: List[str]) -> str:
+    def _copyright_page_xhtml(self, final_title: str, body_lines: List[str], font_style: str = "") -> str:
         values = {}
         note = ""
         label_map = {
@@ -1267,7 +1268,7 @@ class TxtEpubConverter:
         series = values.get("시리즈", "")
         series_html = f'\n        <p>{html.escape(series)}</p>' if series else ""
         subtitle = values.get("부제", "")
-        subtitle_html = f'\n        <p>{html.escape(subtitle)}</p>' if subtitle else ""
+        subtitle_html = f'\n        <h3 align="center">{html.escape(subtitle)}</h3>\n        <br>' if subtitle else ""
         isbn = values.get("ISBN", "")
         isbn_html = f'\n        <p>ISBN {html.escape(isbn)}</p>' if isbn else ""
         note_html = f'\n        <p>&#160;</p>\n        <p>{html.escape(note)}</p>' if note else ""
@@ -1275,12 +1276,12 @@ class TxtEpubConverter:
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
     <title>판권</title>
-    <link rel="stylesheet" type="text/css" href="../style/main.css" />
 </head>
-<body>
+<body style="line-height: 1.8; margin: 5%;{font_style}">
     <div>
         {series_html}
-        <p class="large-text"><strong>{html.escape(final_title)}</strong></p>{subtitle_html}
+        <h1>{html.escape(final_title)}</h1>
+        <br>{subtitle_html}
         <p>&#160;</p>
         {issue_block}
         <p>&#160;</p>
@@ -1372,6 +1373,97 @@ class TxtEpubConverter:
         if ext == ".woff2":
             return "font/woff2"
         return "font/ttf"
+
+    def _toc_to_xhtml(
+        self, final_title: str, chapters: List, copyright_item, font_style: str = ""
+    ) -> str:
+        lines = [f'<h1 align="center">{html.escape(final_title)}</h1>', "<br>"]
+        
+        for idx, chapter in enumerate(chapters, start=1):
+            chapter_href = chapter.file_name
+            title_text = chapter.title
+            
+            # 부제 추출 (있을 경우)
+            subtitle_text = getattr(chapter, 'subtitle', '')
+            if not subtitle_text:
+                # marker 와 subtitle 분리 시도
+                marker, subtitle = self._split_chapter_heading_parts(chapter.title, getattr(chapter, 'marker', ''), '')
+                if subtitle:
+                    subtitle_text = subtitle
+            
+            if subtitle_text:
+                # 화수와 부제를 한 줄에 표시
+                lines.append(f'<p><a href="{chapter_href}">{html.escape(title_text)} - {html.escape(subtitle_text)}</a></p>')
+            else:
+                lines.append(f'<p><a href="{chapter_href}">{html.escape(title_text)}</a></p>')
+            
+            # 10 화마다 빈줄 추가
+            if idx % 10 == 0:
+                lines.append("<br>")
+        
+        # 마지막에 빈줄 추가
+        lines.append("<br>")
+        
+        # 판권 페이지 링크 추가
+        lines.append(f'<p><a href="{copyright_item.file_name}">판권정보</a></p>')
+        
+        body_content = "\n".join(lines)
+        
+        return f"""
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>목차</title>
+</head>
+<body style="line-height: 1.8; margin: 5%;{font_style}">
+    <div>
+        {body_content}
+    </div>
+</body>
+</html>
+""".strip()
+
+    def _chapter_epub_file_name(self, chapter: Chapter, index: int, used_names: set[str]) -> str:
+        number = chapter.number if isinstance(chapter.number, int) and chapter.number > 0 else index
+        base = f"text/chapter_{number:04d}"
+        name = f"{base}.xhtml"
+        suffix = 2
+        while name in used_names:
+            name = f"{base}_{suffix:02d}.xhtml"
+            suffix += 1
+        used_names.add(name)
+        return name
+
+    def _chapter_to_xhtml(
+        self, title: str, text: str, marker: str = "", subtitle: str = "", closing_text: str = "",
+        font_style: str = "",
+    ) -> str:
+        escaped_title = html.escape(title)
+        heading = self._chapter_heading_xhtml(title, marker, subtitle)
+        text = self._normalize_blank_lines(text)
+        paragraphs = []
+        for block in text.split("\n"):
+            paragraphs.append(f"<p>{html.escape(block.strip())}</p>" if block.strip() else "<p>&#160;</p>")
+        if closing_text.strip():
+            paragraphs.append("<p>&#160;</p>")
+            paragraphs.append(
+                f'<p align="right">'
+                f'{html.escape(closing_text.strip())}</p>'
+            )
+        body = "\n".join(paragraphs)
+        return f"""
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>{escaped_title}</title>
+</head>
+<body style="line-height: 1.8; margin: 5%;{font_style}">
+    {heading}
+    <p>&#160;</p>
+    <div>
+    {body}
+    </div>
+</body>
+</html>
+""".strip()
 
     def _normalize_blank_lines(self, text: str) -> str:
         raw_lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
